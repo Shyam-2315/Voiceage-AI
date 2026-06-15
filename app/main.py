@@ -5,6 +5,7 @@ import logging
 from fastapi import FastAPI
 
 from app.api.routes.predict import router as predict_router
+from app.api.routes.realtime import router as realtime_router
 from app.api.routes.twilio import router as twilio_router
 from app.core.config import settings
 from app.schemas.prediction import HealthResponse
@@ -23,6 +24,7 @@ app = FastAPI(
 )
 app.include_router(predict_router)
 app.include_router(twilio_router)
+app.include_router(realtime_router)
 
 
 @app.on_event("startup")

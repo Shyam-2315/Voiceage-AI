@@ -8,3 +8,4 @@ soundfile
 numpy
 requests
 twilio
+websockets

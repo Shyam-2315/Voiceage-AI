@@ -62,3 +62,44 @@ data/twilio_predictions/
 ```
 
 Signature validation is enabled when `TWILIO_AUTH_TOKEN` is set and the `twilio` package is installed. Keep the Console webhook URL exactly aligned with `PUBLIC_BASE_URL` so Twilio signature validation receives the same public URL that Twilio signed.
+
+## Phase 17: Twilio + OpenAI Realtime Conversation Integration
+
+This adds a separate live phone conversation flow using Twilio Media Streams and the OpenAI Realtime API. The existing recording-based Twilio webhook remains available at `/api/twilio/voice`; no training or model retraining is required.
+
+Set these environment variables before running the API:
+
+```bash
+export AZURE_OPENAI_API_KEY="..."
+export AZURE_OPENAI_REALTIME_ENDPOINT="https://admin-mf2e0nkt-eastus2.cognitiveservices.azure.com/openai/realtime"
+export AZURE_OPENAI_REALTIME_DEPLOYMENT="gpt-realtime-mini"
+export AZURE_OPENAI_API_VERSION="2024-10-01-preview"
+export PUBLIC_BASE_URL="https://your-public-ngrok-or-host-url"
+export REALTIME_VOICE="alloy"
+```
+
+The API connects to Azure OpenAI Realtime over:
+
+```text
+wss://admin-mf2e0nkt-eastus2.cognitiveservices.azure.com/openai/realtime?api-version=2024-10-01-preview&deployment=gpt-realtime-mini
+```
+
+Azure authentication uses the `api-key` WebSocket header from `AZURE_OPENAI_API_KEY`. The legacy `OPENAI_API_KEY` and `OPENAI_REALTIME_MODEL` settings remain available for non-Azure OpenAI Realtime usage when Azure settings are not present.
+
+Twilio Console setup for live realtime conversation:
+
+```text
+POST https://<ngrok-url>/api/twilio/realtime-voice
+```
+
+The realtime webhook returns TwiML with `<Connect><Stream>` and sends Twilio audio to:
+
+```text
+wss://<ngrok-url-without-https>/api/realtime/twilio-stream
+```
+
+Twilio caller audio is forwarded as mulaw 8000 Hz audio to OpenAI Realtime, and OpenAI audio deltas are streamed back to Twilio in the same format. Conversation events, transcripts, and the first caller audio capture for later VoiceAge prediction are saved under:
+
+```text
+data/realtime_conversations/
+```
