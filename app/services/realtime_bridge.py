@@ -24,7 +24,8 @@ TWILIO_AUDIO_FORMAT = "g711_ulaw"
 
 ASSISTANT_INSTRUCTIONS = (
     "You are VoiceAge AI, a concise and friendly phone assistant. "
-    "Keep responses brief, natural, and conversational. "
+    "Respond in 1 to 2 short sentences. "
+    "Avoid long greetings and get to the point naturally. "
     "If audio is unclear, ask one short clarifying question."
 )
 
@@ -71,9 +72,9 @@ def openai_session_update_event() -> dict[str, Any]:
             "input_audio_transcription": {"model": "whisper-1"},
             "turn_detection": {
                 "type": "server_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 300,
-                "silence_duration_ms": 600,
+                "threshold": settings.realtime_vad_threshold,
+                "prefix_padding_ms": settings.realtime_vad_prefix_ms,
+                "silence_duration_ms": settings.realtime_vad_silence_ms,
             },
         },
     }
@@ -176,9 +177,12 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
     try:
         openai_ws = await connect_openai_realtime()
         logger.info(
-            "Azure/OpenAI Realtime WebSocket connected: provider=%s model=%s",
+            "Azure/OpenAI Realtime WebSocket connected: provider=%s model=%s vad_threshold=%s vad_prefix_ms=%s vad_silence_ms=%s",
             "azure" if settings.use_azure_openai_realtime else "openai",
             settings.realtime_model_name,
+            settings.realtime_vad_threshold,
+            settings.realtime_vad_prefix_ms,
+            settings.realtime_vad_silence_ms,
         )
         await send_openai_event(openai_ws, openai_session_update_event())
         await conversation_logger.log_event(
@@ -206,6 +210,10 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                     },
                 },
             )
+            first_send_marked = await conversation_logger.mark_latency_event("first_twilio_audio_send")
+            if first_send_marked:
+                await conversation_logger.log_event("twilio", "first_audio_send", {})
+                logger.info("First assistant audio sent to Twilio.")
 
         async def flush_pending_openai_audio() -> None:
             while stream_sid and pending_openai_audio_deltas:
@@ -248,6 +256,14 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                         payload = media.get("payload")
                         if not payload:
                             continue
+                        media_frame_count = await conversation_logger.increment_twilio_media_frame()
+                        if media_frame_count % 100 == 0:
+                            logger.info(
+                                "Twilio media frame received: count=%s chunk=%s timestamp=%s",
+                                media_frame_count,
+                                media.get("chunk"),
+                                media.get("timestamp"),
+                            )
                         await conversation_logger.capture_twilio_payload(payload)
                         await send_openai_event(
                             openai_ws,
@@ -303,20 +319,32 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                         "input_audio_buffer.speech_stopped",
                         "response.created",
                         "response.audio.delta",
+                        "response.output_audio.delta",
                         "response.audio_transcript.delta",
                         "conversation.item.input_audio_transcription.completed",
                         "error",
                     }:
-                        if event_type == "response.audio.delta":
-                            logger.info(
-                                "Azure/OpenAI Realtime event: %s delta_bytes_base64=%s",
-                                event_type,
-                                compact_payload.get("delta_bytes_base64", 0),
+                        if event_type in {"response.audio.delta", "response.output_audio.delta"}:
+                            first_delta_marked = await conversation_logger.mark_latency_event(
+                                "first_response_audio_delta"
                             )
+                            if first_delta_marked:
+                                logger.info(
+                                    "First Azure/OpenAI audio delta received: event=%s delta_bytes_base64=%s",
+                                    event_type,
+                                    compact_payload.get("delta_bytes_base64", 0),
+                                )
                         elif event_type == "error":
                             logger.error("Azure/OpenAI Realtime error event: %s", event)
                         else:
                             logger.info("Azure/OpenAI Realtime event: %s", event_type)
+
+                        if event_type == "input_audio_buffer.speech_started":
+                            await conversation_logger.mark_latency_event("speech_started")
+                        elif event_type == "input_audio_buffer.speech_stopped":
+                            await conversation_logger.mark_latency_event("speech_stopped")
+                        elif event_type == "response.created":
+                            await conversation_logger.mark_latency_event("response_created")
 
                         await conversation_logger.log_event(
                             "openai",

@@ -76,6 +76,9 @@ export AZURE_OPENAI_REALTIME_DEPLOYMENT="gpt-realtime-mini"
 export AZURE_OPENAI_API_VERSION="2024-10-01-preview"
 export PUBLIC_BASE_URL="https://your-public-ngrok-or-host-url"
 export REALTIME_VOICE="alloy"
+export REALTIME_VAD_THRESHOLD="0.4"
+export REALTIME_VAD_SILENCE_MS="400"
+export REALTIME_VAD_PREFIX_MS="200"
 ```
 
 The API connects to Azure OpenAI Realtime over:
@@ -102,4 +105,10 @@ Twilio caller audio is forwarded as mulaw 8000 Hz audio to OpenAI Realtime, and 
 
 ```text
 data/realtime_conversations/
+```
+
+Realtime latency metrics are saved per call at:
+
+```text
+data/realtime_conversations/<call_id>/latency_metrics.json
 ```

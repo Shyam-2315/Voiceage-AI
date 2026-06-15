@@ -34,6 +34,9 @@ class Settings:
     realtime_voice: str = os.getenv("REALTIME_VOICE", "alloy")
     realtime_conversations_dir: Path = PROJECT_ROOT / "data" / "realtime_conversations"
     realtime_audio_capture_seconds: int = int(os.getenv("REALTIME_AUDIO_CAPTURE_SECONDS", "20"))
+    realtime_vad_threshold: float = float(os.getenv("REALTIME_VAD_THRESHOLD", "0.4"))
+    realtime_vad_silence_ms: int = int(os.getenv("REALTIME_VAD_SILENCE_MS", "400"))
+    realtime_vad_prefix_ms: int = int(os.getenv("REALTIME_VAD_PREFIX_MS", "200"))
 
     @property
     def use_azure_openai_realtime(self) -> bool:
