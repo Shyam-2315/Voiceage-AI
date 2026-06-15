@@ -1,0 +1,1 @@
+"""VoiceAge AI FastAPI application."""

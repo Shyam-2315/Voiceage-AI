@@ -1,0 +1,26 @@
+# ML pipeline dependencies — voiceage-ai
+# Install with:  pip install -r ml/requirements.txt
+
+# Audio processing
+librosa==0.10.2
+soundfile==0.12.1
+numpy==1.26.4
+
+# Progress bar
+tqdm==4.66.4
+
+# Data handling
+pandas==2.2.2
+pyarrow==24.0.0
+
+# Training dependencies (wav2vec / baseline)
+transformers==4.41.2
+torch==2.3.1
+datasets==2.19.1
+accelerate>=0.30.0
+scikit-learn==1.5.0
+
+# Advanced classical models (Phase 11A)
+lightgbm>=4.5.0
+xgboost>=2.1.0
+catboost>=1.2.7

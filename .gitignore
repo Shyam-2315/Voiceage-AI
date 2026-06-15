@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+env/
+conda-meta/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Data - very large
+data/raw/
+data/processed/
+data/features/
+data/embeddings/
+data/twilio_predictions/
+
+# Models - very large
+models/
+*.joblib
+*.pkl
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+
+# Reports / outputs
+reports/
+outputs/
+logs/
+*.log
+
+# Audio files
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.z01
+*.z02
+*.z03
+*.z04
+*.z05
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Ngrok
+ngrok
+ngrok.yml
+
+# Cache
+.cache/
+huggingface/
+wandb/
+mlruns/miniconda.sh
+miniconda.sh
+miniconda.sh
+miniconda.sh
+miniconda.sh
+data/
+models/
+.env
+*.wav
+*.mp3
+*.tar.gz
+*.zip
+*.joblib
+*.bin
+*.safetensors
