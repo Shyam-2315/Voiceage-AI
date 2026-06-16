@@ -41,5 +41,6 @@ def health() -> HealthResponse:
         status="ok",
         model_loaded=model_service.is_loaded,
         model_version=settings.model_version,
+        model_path=str(settings.model_path),
         device=str(model_service.device),
     )

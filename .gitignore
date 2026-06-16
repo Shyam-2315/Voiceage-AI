@@ -18,14 +18,12 @@ conda-meta/
 .env.*
 !.env.example
 
-# Data - very large
-data/raw/
-data/processed/
-data/features/
-data/embeddings/
-data/twilio_predictions/
+# Runtime data, reports, and cleanup archive
+data/
+reports/
+archive_to_delete/
 
-# Models - very large
+# Models and model artifacts
 models/
 *.joblib
 *.pkl
@@ -35,30 +33,27 @@ models/
 *.safetensors
 *.onnx
 
-# Reports / outputs
-reports/
+# Outputs and logs
 outputs/
 logs/
 *.log
+*.jsonl
 
 # Audio files
 *.wav
 *.mp3
+*.ulaw
 *.m4a
 *.flac
 *.ogg
 
-# Archives
+# Archives and installers
 *.zip
 *.tar
 *.tar.gz
 *.tgz
 *.7z
-*.z01
-*.z02
-*.z03
-*.z04
-*.z05
+miniconda.sh
 
 # IDE / OS
 .vscode/
@@ -70,22 +65,8 @@ Thumbs.db
 ngrok
 ngrok.yml
 
-# Cache
+# Training caches
 .cache/
 huggingface/
 wandb/
-mlruns/miniconda.sh
-miniconda.sh
-miniconda.sh
-miniconda.sh
-miniconda.sh
-data/
-models/
-.env
-*.wav
-*.mp3
-*.tar.gz
-*.zip
-*.joblib
-*.bin
-*.safetensors
+mlruns/

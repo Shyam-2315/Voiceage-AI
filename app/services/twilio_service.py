@@ -74,8 +74,10 @@ async def validate_twilio_signature(request: Request, form_data: dict[str, Any])
         logger.warning("TWILIO_AUTH_TOKEN is not set; skipping Twilio signature validation.")
         return
     if RequestValidator is None:
-        logger.warning("twilio package is not installed; skipping Twilio signature validation.")
-        return
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Twilio signature validation dependency is not installed.",
+        )
 
     signature = request.headers.get("X-Twilio-Signature")
     if not signature:

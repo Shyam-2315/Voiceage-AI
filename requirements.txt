@@ -1,11 +1,25 @@
-fastapi
-uvicorn[standard]
-python-multipart
-torch
-transformers
-librosa
-soundfile
-numpy
-requests
-twilio
-websockets
+# VoiceAge AI production API runtime
+# Supported runtime: Python 3.11
+
+# FastAPI app
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+
+# Audio preprocessing
+librosa==0.10.2
+soundfile==0.12.1
+numpy==1.26.4
+
+# Wav2Vec2 model inference
+torch==2.3.1
+transformers==4.41.2
+safetensors==0.4.3
+
+# Twilio routes and callbacks
+requests==2.32.3
+twilio==9.2.3
+
+# Azure/OpenAI realtime bridge
+websockets==12.0

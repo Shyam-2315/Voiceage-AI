@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import nullcontext
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -12,6 +13,7 @@ from fastapi import HTTPException, status
 from transformers import AutoFeatureExtractor, AutoModelForAudioClassification
 
 from app.core.config import settings
+from app.services.audio_service import AudioProcessingError, decode_audio_file
 from app.schemas.prediction import PredictionResponse
 
 
@@ -129,6 +131,18 @@ class ModelService:
             model_version=settings.model_version,
             processing_time_ms=processing_time_ms,
         )
+
+    def predict_audio_file(self, path: str | Path) -> PredictionResponse:
+        audio_path = Path(path)
+        if not audio_path.exists():
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+        try:
+            audio = decode_audio_file(audio_path)
+        except AudioProcessingError as exc:
+            raise ValueError(str(exc)) from exc
+
+        return self.predict(audio)
 
 
 def confidence_level(confidence: float) -> str:

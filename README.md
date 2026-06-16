@@ -101,14 +101,68 @@ The realtime webhook returns TwiML with `<Connect><Stream>` and sends Twilio aud
 wss://<ngrok-url-without-https>/api/realtime/twilio-stream
 ```
 
-Twilio caller audio is forwarded as mulaw 8000 Hz audio to OpenAI Realtime, and OpenAI audio deltas are streamed back to Twilio in the same format. Conversation events, transcripts, and the first caller audio capture for later VoiceAge prediction are saved under:
+Twilio inbound caller audio is forwarded as mulaw 8000 Hz audio to OpenAI Realtime, and OpenAI audio deltas are streamed back to Twilio in the same format. Conversation events, transcripts, caller-only audio, and optional assistant audio are saved under:
 
 ```text
 data/realtime_conversations/
+```
+
+Each realtime call folder can include:
+
+```text
+caller_only_audio.ulaw
+caller_only_audio.wav
+assistant_audio.ulaw
+latency_metrics.json
 ```
 
 Realtime latency metrics are saved per call at:
 
 ```text
 data/realtime_conversations/<call_id>/latency_metrics.json
+```
+
+## Why caller-only audio is used for VoiceAge
+
+VoiceAge predicts age from the speaker's voice. In realtime phone calls, the saved conversation can include both the caller and the AI assistant. If assistant speech is included in the audio sent to VoiceAge, the model may classify the assistant voice instead of the caller.
+
+For realtime Twilio calls, VoiceAge therefore uses only `caller_only_audio.wav`, built from inbound Twilio media frames. Azure/OpenAI assistant `response.audio.delta` frames are excluded from this file and may be saved separately as `assistant_audio.ulaw` for debugging. Reports never fall back to mixed conversation audio for VoiceAge prediction.
+
+If `caller_only_audio.wav` is missing or shorter than 3 seconds, the report marks `voiceage_prediction_success=false` with `failure_reason=caller_only_audio_missing_or_too_short`.
+
+## Phase 19: Post-Call Reports
+
+Every realtime Twilio call now generates readable post-call reports after the stream stops or disconnects. Reports are written to:
+
+```text
+data/realtime_conversations/<call_id>/reports/
+```
+
+Each call folder contains:
+
+```text
+voiceage_report.json
+voiceage_report.md
+conversation_report.json
+conversation_report.md
+combined_call_report.json
+combined_call_report.md
+```
+
+The VoiceAge report runs the existing `models/wav2vec_50k/best` model against `caller_only_audio.wav` and includes the predicted age group, confidence, class probabilities, model version, audio source, caller audio duration, and evaluation reference of 81.37% accuracy / 81.29% weighted F1. The report explains that the model predicts an age group from voice, not an exact age, and states that the AI assistant voice was excluded.
+
+The conversation report summarizes transcripts when available, user/assistant turn counts, call duration, latency metrics, and any errors or warnings found in the realtime event log. If transcript or latency data is missing, the reports are still generated and state what was unavailable.
+
+The combined call report is written for non-technical review. It includes an executive summary, system success checks for VoiceAge, Twilio Media Streams, and Azure/OpenAI Realtime, call quality notes, and a recommendation of `Ready for demo`, `Partial success`, or `Needs debugging`.
+
+To regenerate reports for an older call folder:
+
+```bash
+python scripts/generate_call_report.py --call-dir data/realtime_conversations/<call_id>
+```
+
+The realtime bridge logs this message when report generation finishes:
+
+```text
+Post-call reports generated: <path>
 ```

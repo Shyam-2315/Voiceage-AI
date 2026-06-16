@@ -35,6 +35,16 @@ class RealtimeConversationMetadata(BaseModel):
     captured_audio_seconds: float = 0.0
     captured_audio_ulaw_path: str | None = None
     captured_audio_wav_path: str | None = None
+    audio_source: str = "caller_only"
+    caller_only_audio_seconds: float = 0.0
+    caller_only_audio_ulaw_path: str | None = None
+    caller_only_audio_wav_path: str | None = None
+    caller_audio_ready_for_voiceage: bool = False
+    voiceage_minimum_ready_seconds: float = 5.0
+    voiceage_capture_limit_seconds: float = 10.0
+    assistant_audio_excluded_from_voiceage: bool = True
+    assistant_audio_ulaw_path: str | None = None
+    assistant_audio_seconds: float = 0.0
 
 
 class ConversationLogEvent(BaseModel):

@@ -20,6 +20,9 @@ except ImportError:  # pragma: no cover - Python 3.13+ compatibility
 
 
 logger = logging.getLogger(__name__)
+ULAW_SAMPLE_RATE_HZ = 8000
+VOICEAGE_READY_SECONDS = 5.0
+VOICEAGE_MAX_CAPTURE_SECONDS = 10.0
 
 
 def utc_timestamp() -> str:
@@ -50,8 +53,12 @@ class RealtimeConversationLogger:
         capture_seconds: int | None = None,
     ) -> None:
         self.root_dir = root_dir or settings.realtime_conversations_dir
-        self.capture_seconds = capture_seconds or settings.realtime_audio_capture_seconds
-        self.capture_limit_bytes = max(1, self.capture_seconds) * 8000
+        configured_capture_seconds = capture_seconds or settings.realtime_audio_capture_seconds
+        self.capture_seconds = min(
+            VOICEAGE_MAX_CAPTURE_SECONDS,
+            max(VOICEAGE_READY_SECONDS, float(configured_capture_seconds)),
+        )
+        self.capture_limit_bytes = int(self.capture_seconds * ULAW_SAMPLE_RATE_HZ)
         self.started_at = utc_timestamp()
         self.call_sid: str | None = None
         self.stream_sid: str | None = None
@@ -59,9 +66,12 @@ class RealtimeConversationLogger:
         self.events_path: Path | None = None
         self.metadata_path: Path | None = None
         self.latency_metrics_path: Path | None = None
-        self.audio_ulaw_path: Path | None = None
-        self.audio_wav_path: Path | None = None
-        self._captured_audio = bytearray()
+        self.caller_audio_ulaw_path: Path | None = None
+        self.caller_audio_wav_path: Path | None = None
+        self.assistant_audio_ulaw_path: Path | None = None
+        self._caller_only_audio = bytearray()
+        self._assistant_audio = bytearray()
+        self._caller_audio_ready_logged = False
         self._latency_timestamps: dict[str, str] = {}
         self._latency_marks: dict[str, float] = {}
         self._twilio_media_frames = 0
@@ -69,7 +79,19 @@ class RealtimeConversationLogger:
 
     @property
     def captured_audio_seconds(self) -> float:
-        return len(self._captured_audio) / 8000.0
+        return self.caller_audio_duration_seconds
+
+    @property
+    def caller_audio_duration_seconds(self) -> float:
+        return len(self._caller_only_audio) / float(ULAW_SAMPLE_RATE_HZ)
+
+    @property
+    def assistant_audio_duration_seconds(self) -> float:
+        return len(self._assistant_audio) / float(ULAW_SAMPLE_RATE_HZ)
+
+    @property
+    def caller_audio_ready_for_voiceage(self) -> bool:
+        return self.caller_audio_duration_seconds >= VOICEAGE_READY_SECONDS
 
     async def start(self, call_sid: str | None, stream_sid: str | None) -> None:
         self.call_sid = call_sid
@@ -123,23 +145,61 @@ class RealtimeConversationLogger:
             self._latency_marks[event_name] = monotonic_mark
             return True
 
+    async def has_latency_event(self, event_name: str) -> bool:
+        async with self._lock:
+            return event_name in self._latency_timestamps
+
     async def increment_twilio_media_frame(self) -> int:
         async with self._lock:
             self._twilio_media_frames += 1
             return self._twilio_media_frames
 
-    async def capture_twilio_payload(self, payload: str) -> None:
-        if len(self._captured_audio) >= self.capture_limit_bytes:
-            return
+    async def capture_caller_payload(self, payload: str) -> bool:
+        if len(self._caller_only_audio) >= self.capture_limit_bytes:
+            return self.caller_audio_ready_for_voiceage
 
         try:
             audio = base64.b64decode(payload)
         except ValueError:
-            await self.log_event("bridge", "capture.invalid_payload", {})
+            await self.log_event("bridge", "caller_capture.invalid_payload", {})
+            return False
+
+        ready_before = self.caller_audio_ready_for_voiceage
+        remaining = self.capture_limit_bytes - len(self._caller_only_audio)
+        self._caller_only_audio.extend(audio[:remaining])
+        ready_after = self.caller_audio_ready_for_voiceage
+
+        if ready_after and not ready_before and not self._caller_audio_ready_logged:
+            self._caller_audio_ready_logged = True
+            await self.log_event(
+                "bridge",
+                "voiceage.caller_audio_ready",
+                {
+                    "audio_source": "caller_only",
+                    "caller_audio_duration_seconds": round(self.caller_audio_duration_seconds, 3),
+                    "minimum_required_seconds": VOICEAGE_READY_SECONDS,
+                    "assistant_audio_excluded": True,
+                },
+            )
+        return ready_after
+
+    async def capture_twilio_payload(self, payload: str) -> None:
+        await self.capture_caller_payload(payload)
+
+    async def capture_assistant_payload(self, payload: str) -> None:
+        try:
+            audio = base64.b64decode(payload)
+        except ValueError:
+            await self.log_event("bridge", "assistant_capture.invalid_payload", {})
             return
 
-        remaining = self.capture_limit_bytes - len(self._captured_audio)
-        self._captured_audio.extend(audio[:remaining])
+        self._assistant_audio.extend(audio)
+
+    async def write_caller_audio_snapshot(self) -> Path | None:
+        if self.session_dir is None:
+            await self.start(self.call_sid, self.stream_sid)
+        await asyncio.to_thread(self._write_caller_audio_files)
+        return self.caller_audio_wav_path
 
     async def finalize(self) -> None:
         if self.session_dir is None:
@@ -148,7 +208,11 @@ class RealtimeConversationLogger:
         await self.log_event(
             "bridge",
             "session.ended",
-            {"captured_audio_seconds": round(self.captured_audio_seconds, 3)},
+            {
+                "caller_audio_duration_seconds": round(self.caller_audio_duration_seconds, 3),
+                "assistant_audio_duration_seconds": round(self.assistant_audio_duration_seconds, 3),
+                "assistant_audio_excluded_from_voiceage": True,
+            },
         )
 
         await asyncio.to_thread(self._write_audio_files)
@@ -160,8 +224,9 @@ class RealtimeConversationLogger:
         self.events_path = session_dir / "events.jsonl"
         self.metadata_path = session_dir / "metadata.json"
         self.latency_metrics_path = session_dir / "latency_metrics.json"
-        self.audio_ulaw_path = session_dir / "caller_capture.ulaw"
-        self.audio_wav_path = session_dir / "caller_capture.wav"
+        self.caller_audio_ulaw_path = session_dir / "caller_only_audio.ulaw"
+        self.caller_audio_wav_path = session_dir / "caller_only_audio.wav"
+        self.assistant_audio_ulaw_path = session_dir / "assistant_audio.ulaw"
 
     async def _move_to_call_dir(self, call_sid: str | None, stream_sid: str | None) -> None:
         if call_sid is None or self.session_dir is None:
@@ -190,21 +255,30 @@ class RealtimeConversationLogger:
             handle.write(line)
 
     def _write_audio_files(self) -> None:
-        if not self._captured_audio or self.audio_ulaw_path is None:
+        self._write_caller_audio_files()
+        self._write_assistant_audio_file()
+
+    def _write_caller_audio_files(self) -> None:
+        if not self._caller_only_audio or self.caller_audio_ulaw_path is None:
             return
 
-        raw_audio = bytes(self._captured_audio)
-        self.audio_ulaw_path.write_bytes(raw_audio)
+        raw_audio = bytes(self._caller_only_audio)
+        self.caller_audio_ulaw_path.write_bytes(raw_audio)
 
-        if audioop is None or self.audio_wav_path is None:
+        if audioop is None or self.caller_audio_wav_path is None:
             return
 
         pcm16 = audioop.ulaw2lin(raw_audio, 2)
-        with wave.open(str(self.audio_wav_path), "wb") as wav_file:
+        with wave.open(str(self.caller_audio_wav_path), "wb") as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
-            wav_file.setframerate(8000)
+            wav_file.setframerate(ULAW_SAMPLE_RATE_HZ)
             wav_file.writeframes(pcm16)
+
+    def _write_assistant_audio_file(self) -> None:
+        if not self._assistant_audio or self.assistant_audio_ulaw_path is None:
+            return
+        self.assistant_audio_ulaw_path.write_bytes(bytes(self._assistant_audio))
 
     def _write_metadata(self) -> None:
         if self.metadata_path is None:
@@ -217,12 +291,33 @@ class RealtimeConversationLogger:
             ended_at=utc_timestamp(),
             openai_model=settings.realtime_model_name,
             voice=settings.realtime_voice,
-            captured_audio_seconds=round(self.captured_audio_seconds, 3),
-            captured_audio_ulaw_path=str(self.audio_ulaw_path) if self.audio_ulaw_path else None,
-            captured_audio_wav_path=str(self.audio_wav_path) if self.audio_wav_path else None,
+            captured_audio_seconds=round(self.caller_audio_duration_seconds, 3),
+            captured_audio_ulaw_path=str(self.caller_audio_ulaw_path) if self.caller_audio_ulaw_path else None,
+            captured_audio_wav_path=str(self.caller_audio_wav_path) if self.caller_audio_wav_path else None,
+        )
+        payload = pydantic_dump(metadata)
+        payload.update(
+            {
+                "audio_source": "caller_only",
+                "caller_only_audio_seconds": round(self.caller_audio_duration_seconds, 3),
+                "caller_only_audio_ulaw_path": str(self.caller_audio_ulaw_path)
+                if self.caller_audio_ulaw_path
+                else None,
+                "caller_only_audio_wav_path": str(self.caller_audio_wav_path)
+                if self.caller_audio_wav_path
+                else None,
+                "caller_audio_ready_for_voiceage": self.caller_audio_ready_for_voiceage,
+                "voiceage_minimum_ready_seconds": VOICEAGE_READY_SECONDS,
+                "voiceage_capture_limit_seconds": self.capture_seconds,
+                "assistant_audio_excluded_from_voiceage": True,
+                "assistant_audio_ulaw_path": str(self.assistant_audio_ulaw_path)
+                if self.assistant_audio_ulaw_path and self._assistant_audio
+                else None,
+                "assistant_audio_seconds": round(self.assistant_audio_duration_seconds, 3),
+            }
         )
         with self.metadata_path.open("w", encoding="utf-8") as handle:
-            json.dump(pydantic_dump(metadata), handle, indent=2)
+            json.dump(payload, handle, indent=2)
 
     def _write_latency_metrics(self) -> None:
         if self.latency_metrics_path is None:
@@ -260,8 +355,24 @@ class RealtimeConversationLogger:
                     "speech_stopped",
                     "first_twilio_audio_send",
                 ),
+                "response_created_to_first_audio_delta": elapsed_ms(
+                    "response_created",
+                    "first_response_audio_delta",
+                ),
+                "first_audio_delta_to_twilio_send": elapsed_ms(
+                    "first_response_audio_delta",
+                    "first_twilio_audio_send",
+                ),
+                "total_response_latency": elapsed_ms(
+                    "speech_stopped",
+                    "first_twilio_audio_send",
+                ),
             },
             "twilio_media_frames": self._twilio_media_frames,
+            "audio_source": "caller_only",
+            "caller_audio_duration_seconds": round(self.caller_audio_duration_seconds, 3),
+            "assistant_audio_duration_seconds": round(self.assistant_audio_duration_seconds, 3),
+            "assistant_audio_excluded_from_voiceage": True,
         }
         with self.latency_metrics_path.open("w", encoding="utf-8") as handle:
             json.dump(metrics, handle, indent=2)

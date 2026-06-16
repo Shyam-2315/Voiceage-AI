@@ -49,27 +49,47 @@ def decode_audio_bytes(content: bytes, suffix: str) -> np.ndarray:
             temp_file.write(content)
             temp_path = temp_file.name
 
-        audio, _ = librosa.load(
-            temp_path,
-            sr=settings.target_sample_rate,
-            mono=True,
-            duration=settings.max_duration_seconds,
-        )
+        audio = _load_audio_file(Path(temp_path))
+    except AudioProcessingError:
+        raise
     except Exception as exc:
         raise AudioProcessingError("Could not decode uploaded audio file.") from exc
     finally:
         if temp_path:
             Path(temp_path).unlink(missing_ok=True)
 
+    return _prepare_audio(audio, "Uploaded audio")
+
+
+def decode_audio_file(path: Path) -> np.ndarray:
+    audio = _load_audio_file(path)
+    return _prepare_audio(audio, "Audio file")
+
+
+def _load_audio_file(path: Path) -> np.ndarray:
+    try:
+        audio, _ = librosa.load(
+            path,
+            sr=settings.target_sample_rate,
+            mono=True,
+            duration=settings.max_duration_seconds,
+        )
+    except Exception as exc:
+        raise AudioProcessingError(f"Could not decode audio file: {path}") from exc
+
+    return audio
+
+
+def _prepare_audio(audio: np.ndarray, source_label: str) -> np.ndarray:
     if audio.size == 0:
-        raise AudioProcessingError("Uploaded audio contains no samples.")
+        raise AudioProcessingError(f"{source_label} contains no samples.")
     if not np.isfinite(audio).all():
-        raise AudioProcessingError("Uploaded audio contains invalid sample values.")
+        raise AudioProcessingError(f"{source_label} contains invalid sample values.")
 
     max_samples = int(settings.max_duration_seconds * settings.target_sample_rate)
     audio = audio[:max_samples].astype(np.float32, copy=False)
     if np.max(np.abs(audio)) == 0:
-        raise AudioProcessingError("Uploaded audio is silent.")
+        raise AudioProcessingError(f"{source_label} is silent.")
     return audio
 
 

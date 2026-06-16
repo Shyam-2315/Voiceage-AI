@@ -9,11 +9,41 @@ from urllib.parse import parse_qs, urlparse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
+def path_from_env(name: str, default: Path) -> Path:
+    value = os.getenv(name)
+    if not value:
+        return default
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+def int_from_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def float_from_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "VoiceAge AI"
-    model_path: Path = PROJECT_ROOT / "models" / "wav2vec_50k" / "best"
-    model_version: str = "wav2vec_50k"
+    model_path: Path = path_from_env("MODEL_PATH", PROJECT_ROOT / "models" / "wav2vec_75k" / "best")
+    model_version: str = "wav2vec_75k"
     target_sample_rate: int = 16_000
     max_duration_seconds: float = 8.0
     max_upload_mb: int = 25
@@ -29,14 +59,17 @@ class Settings:
     openai_realtime_model: str = os.getenv("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview")
     azure_openai_api_key: str | None = os.getenv("AZURE_OPENAI_API_KEY")
     azure_openai_realtime_endpoint: str | None = os.getenv("AZURE_OPENAI_REALTIME_ENDPOINT")
-    azure_openai_realtime_deployment: str | None = os.getenv("AZURE_OPENAI_REALTIME_DEPLOYMENT")
-    azure_openai_api_version: str | None = os.getenv("AZURE_OPENAI_API_VERSION")
+    azure_openai_realtime_deployment: str | None = os.getenv(
+        "AZURE_OPENAI_REALTIME_DEPLOYMENT",
+        "gpt-realtime-mini",
+    )
+    azure_openai_api_version: str | None = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-01-preview")
     realtime_voice: str = os.getenv("REALTIME_VOICE", "alloy")
     realtime_conversations_dir: Path = PROJECT_ROOT / "data" / "realtime_conversations"
-    realtime_audio_capture_seconds: int = int(os.getenv("REALTIME_AUDIO_CAPTURE_SECONDS", "20"))
-    realtime_vad_threshold: float = float(os.getenv("REALTIME_VAD_THRESHOLD", "0.4"))
-    realtime_vad_silence_ms: int = int(os.getenv("REALTIME_VAD_SILENCE_MS", "400"))
-    realtime_vad_prefix_ms: int = int(os.getenv("REALTIME_VAD_PREFIX_MS", "200"))
+    realtime_audio_capture_seconds: int = int_from_env("REALTIME_AUDIO_CAPTURE_SECONDS", 20)
+    realtime_vad_threshold: float = float_from_env("REALTIME_VAD_THRESHOLD", 0.55)
+    realtime_vad_silence_ms: int = int_from_env("REALTIME_VAD_SILENCE_MS", 600)
+    realtime_vad_prefix_ms: int = int_from_env("REALTIME_VAD_PREFIX_MS", 200)
 
     @property
     def use_azure_openai_realtime(self) -> bool:
