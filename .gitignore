@@ -70,3 +70,5 @@ ngrok.yml
 huggingface/
 wandb/
 mlruns/
+
+Test.txt
