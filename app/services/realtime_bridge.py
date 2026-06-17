@@ -15,8 +15,13 @@ from fastapi import HTTPException, WebSocket, WebSocketDisconnect, status
 from websockets.exceptions import ConnectionClosed
 
 from app.core.config import settings
+from app.services.conversation_style_service import (
+    ConversationStyle,
+    build_conversation_style_instructions,
+    select_conversation_style,
+)
 from app.services.conversation_logger import RealtimeConversationLogger
-from app.services.report_service import generate_live_voiceage_prediction, generate_reports_for_call
+from app.services.report_service import generate_live_voiceage_prediction, generate_reports_for_call, load_json
 
 
 logger = logging.getLogger(__name__)
@@ -62,22 +67,36 @@ def build_realtime_voice_twiml() -> str:
     )
 
 
-def openai_session_update_event() -> dict[str, Any]:
+def assistant_instructions(conversation_style: ConversationStyle | None = None) -> str:
+    if conversation_style is None:
+        return ASSISTANT_INSTRUCTIONS
+    return f"{ASSISTANT_INSTRUCTIONS}\n\n{build_conversation_style_instructions(conversation_style)}"
+
+
+def realtime_turn_detection(conversation_style: ConversationStyle | None = None) -> dict[str, Any]:
+    silence_duration_ms = settings.realtime_vad_silence_ms
+    if conversation_style is not None:
+        silence_duration_ms = max(silence_duration_ms, conversation_style.interruption_delay_ms)
+
+    return {
+        "type": "server_vad",
+        "threshold": settings.realtime_vad_threshold,
+        "prefix_padding_ms": settings.realtime_vad_prefix_ms,
+        "silence_duration_ms": silence_duration_ms,
+    }
+
+
+def openai_session_update_event(conversation_style: ConversationStyle | None = None) -> dict[str, Any]:
     return {
         "type": "session.update",
         "session": {
             "modalities": ["audio", "text"],
             "voice": settings.realtime_voice,
-            "instructions": ASSISTANT_INSTRUCTIONS,
+            "instructions": assistant_instructions(conversation_style),
             "input_audio_format": TWILIO_AUDIO_FORMAT,
             "output_audio_format": TWILIO_AUDIO_FORMAT,
             "input_audio_transcription": {"model": "whisper-1"},
-            "turn_detection": {
-                "type": "server_vad",
-                "threshold": settings.realtime_vad_threshold,
-                "prefix_padding_ms": settings.realtime_vad_prefix_ms,
-                "silence_duration_ms": settings.realtime_vad_silence_ms,
-            },
+            "turn_detection": realtime_turn_detection(conversation_style),
         },
     }
 
@@ -223,6 +242,7 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
     assistant_speaking = False
     ignore_barge_in_until = 0.0
     skipped_twilio_media_count = 0
+    applied_adaptive_age_group: str | None = None
 
     try:
         openai_ws = await connect_openai_realtime()
@@ -274,6 +294,88 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
             while stream_sid and pending_openai_audio_deltas:
                 await send_twilio_audio_delta(pending_openai_audio_deltas.popleft())
 
+        async def apply_adaptive_conversation_update(live_report: dict[str, Any]) -> None:
+            nonlocal applied_adaptive_age_group
+
+            if not settings.enable_adaptive_conversation:
+                await conversation_logger.log_event(
+                    "bridge",
+                    "adaptive_conversation.skipped",
+                    {"reason": "disabled_by_config"},
+                )
+                logger.info("Adaptive conversation skipped: disabled_by_config")
+                return
+
+            if not live_report.get("prediction_success"):
+                reason = live_report.get("failure_reason") or "prediction_not_successful"
+                await conversation_logger.log_event(
+                    "bridge",
+                    "adaptive_conversation.skipped",
+                    {"reason": reason},
+                )
+                logger.info("Adaptive conversation skipped: reason=%s", reason)
+                return
+
+            predicted_age_group = str(live_report.get("predicted_age_group") or "").strip() or None
+            selection = select_conversation_style(
+                predicted_age_group,
+                default_age_group=settings.default_conversation_style,
+            )
+            if applied_adaptive_age_group == selection.selected_age_group:
+                await conversation_logger.log_event(
+                    "bridge",
+                    "adaptive_conversation.skipped",
+                    {
+                        "reason": "style_already_applied",
+                        "selected_age_group": selection.selected_age_group,
+                    },
+                )
+                logger.info(
+                    "Adaptive conversation skipped: style already applied selected_age_group=%s",
+                    selection.selected_age_group,
+                )
+                return
+
+            try:
+                await send_openai_event(openai_ws, openai_session_update_event(selection.style))
+            except Exception as exc:
+                logger.exception(
+                    "Adaptive conversation session.update failed: selected_age_group=%s",
+                    selection.selected_age_group,
+                )
+                await conversation_logger.log_event(
+                    "bridge",
+                    "adaptive_conversation.update_failed",
+                    {
+                        "selected_age_group": selection.selected_age_group,
+                        "error": str(exc),
+                    },
+                )
+                return
+
+            applied_adaptive_age_group = selection.selected_age_group
+            style_payload = selection.log_payload()
+            logger.info(
+                "Adaptive conversation selected: predicted_age_group=%s selected_age_group=%s used_fallback=%s conversation_style=%s",
+                selection.requested_age_group,
+                selection.selected_age_group,
+                selection.used_fallback,
+                json.dumps(style_payload["conversation_style"], default=str),
+            )
+            await conversation_logger.log_event(
+                "bridge",
+                "adaptive_conversation.style_selected",
+                style_payload,
+            )
+            await conversation_logger.log_event(
+                "openai",
+                "session.update.sent",
+                {
+                    "reason": "adaptive_conversation",
+                    **style_payload,
+                },
+            )
+
         async def run_live_voiceage_prediction() -> None:
             try:
                 audio_path = await conversation_logger.write_caller_audio_snapshot()
@@ -291,6 +393,8 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                     {"path": str(live_path), "audio_source": "caller_only"},
                 )
                 logger.info("VoiceAge live prediction generated: %s", live_path)
+                live_report = await asyncio.to_thread(load_json, live_path)
+                await apply_adaptive_conversation_update(live_report)
             except Exception as exc:
                 logger.exception("VoiceAge live prediction failed")
                 await conversation_logger.log_event(

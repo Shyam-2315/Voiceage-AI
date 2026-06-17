@@ -39,6 +39,13 @@ def float_from_env(name: str, default: float) -> float:
         return default
 
 
+def bool_from_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value in (None, ""):
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "VoiceAge AI"
@@ -70,6 +77,8 @@ class Settings:
     realtime_vad_threshold: float = float_from_env("REALTIME_VAD_THRESHOLD", 0.55)
     realtime_vad_silence_ms: int = int_from_env("REALTIME_VAD_SILENCE_MS", 600)
     realtime_vad_prefix_ms: int = int_from_env("REALTIME_VAD_PREFIX_MS", 200)
+    enable_adaptive_conversation: bool = bool_from_env("ENABLE_ADAPTIVE_CONVERSATION", True)
+    default_conversation_style: str = os.getenv("DEFAULT_CONVERSATION_STYLE", "Adult")
 
     @property
     def use_azure_openai_realtime(self) -> bool:

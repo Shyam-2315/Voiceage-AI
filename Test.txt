@@ -1,0 +1,15 @@
+cd ~/Projects/voiceage-ai/Task
+
+export AZURE_OPENAI_ENDPOINT=https://admin-mf2e0nkt-eastus2.cognitiveservices.azure.com
+export AZURE_OPENAI_API_KEY=6f3RGGWhfZgvZ1UIFp1ZzbTJGZb6Xy2vq9H44xEd4z4rYyM5mLhzJQQJ99BIACHYHv6XJ3w3AAAAACOGxwTn
+export AZURE_OPENAI_REALTIME_DEPLOYMENT=gpt-realtime-mini
+export AZURE_OPENAI_API_VERSION=2024-10-01-preview
+
+python test.py
+
+cd ~/Projects/voiceage-ai/Task
+
+export AZURE_OPENAI_ENDPOINT="https://YOUR-RESOURCE-NAME.openai.azure.com"
+export AZURE_OPENAI_API_KEY="YOUR_AZURE_KEY"
+export AZURE_OPENAI_REALTIME_DEPLOYMENT="gpt-realtime-mini"
+export AZURE_OPENAI_API_VERSION="2025-04-01-preview"
