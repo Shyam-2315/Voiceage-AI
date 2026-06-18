@@ -2,6 +2,8 @@ numpy
 scipy
 soundfile
 librosa
+scikit-learn
 torch
 torchaudio
 silero-vad
+speechbrain
