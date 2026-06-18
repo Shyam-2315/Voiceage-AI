@@ -3,3 +3,5 @@ scipy
 soundfile
 librosa
 torch
+torchaudio
+silero-vad
