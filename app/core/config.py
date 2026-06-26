@@ -75,10 +75,25 @@ class Settings:
     realtime_conversations_dir: Path = PROJECT_ROOT / "data" / "realtime_conversations"
     realtime_audio_capture_seconds: int = int_from_env("REALTIME_AUDIO_CAPTURE_SECONDS", 20)
     realtime_vad_threshold: float = float_from_env("REALTIME_VAD_THRESHOLD", 0.55)
-    realtime_vad_silence_ms: int = int_from_env("REALTIME_VAD_SILENCE_MS", 600)
+    realtime_silence_duration_ms: int = int_from_env(
+        "REALTIME_SILENCE_DURATION_MS",
+        int_from_env("REALTIME_VAD_SILENCE_MS", 3000),
+    )
+    realtime_max_adaptive_silence_ms: int = int_from_env("REALTIME_MAX_ADAPTIVE_SILENCE_MS", 3500)
+    realtime_allow_adaptive_silence_extension: bool = bool_from_env(
+        "REALTIME_ALLOW_ADAPTIVE_SILENCE_EXTENSION",
+        False,
+    )
     realtime_vad_prefix_ms: int = int_from_env("REALTIME_VAD_PREFIX_MS", 200)
     enable_adaptive_conversation: bool = bool_from_env("ENABLE_ADAPTIVE_CONVERSATION", True)
     default_conversation_style: str = os.getenv("DEFAULT_CONVERSATION_STYLE", "Adult")
+    background_voice_isolation_enabled: bool = bool_from_env("BACKGROUND_VOICE_ISOLATION_ENABLED", False)
+    background_voice_isolation_threshold: float = float_from_env("BACKGROUND_VOICE_ISOLATION_THRESHOLD", 0.75)
+    background_voice_reference_seconds: int = int_from_env("BACKGROUND_VOICE_REFERENCE_SECONDS", 5)
+    background_voice_reference_from_vad: bool = bool_from_env("BACKGROUND_VOICE_REFERENCE_FROM_VAD", True)
+    background_voice_reference_max_search_sec: int = int_from_env("BACKGROUND_VOICE_REFERENCE_MAX_SEARCH_SEC", 20)
+    background_voice_min_segment_sec: float = float_from_env("BACKGROUND_VOICE_MIN_SEGMENT_SEC", 1.0)
+    background_voice_debug_metrics: bool = bool_from_env("BACKGROUND_VOICE_DEBUG_METRICS", True)
 
     @property
     def use_azure_openai_realtime(self) -> bool:
@@ -103,6 +118,10 @@ class Settings:
     @property
     def realtime_model_name(self) -> str:
         return self.azure_openai_effective_realtime_deployment or self.openai_realtime_model
+
+    @property
+    def realtime_vad_silence_ms(self) -> int:
+        return self.realtime_silence_duration_ms
 
 
 settings = Settings()

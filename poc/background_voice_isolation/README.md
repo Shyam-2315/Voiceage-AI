@@ -34,8 +34,9 @@ This POC focuses on evaluating practical ways to separate or suppress non-target
    - Report cosine similarity and same-speaker decisions.
 
 4. **Phase 4: Background speaker isolation experiments**
-   - Evaluate source separation or speaker-aware approaches.
-   - Compare outputs against baseline noise reduction.
+   - Combine VAD with speaker verification.
+   - Keep caller-matching speech segments.
+   - Reject background or non-caller speaker segments.
 
 5. **Phase 5: Reporting and recommendation**
    - Summarize results, limitations, and risks.
@@ -55,6 +56,8 @@ poc/background_voice_isolation/
 ├── run_phase1_check.py
 ├── run_phase2_check.py
 ├── run_phase3_check.py
+├── run_phase4_check.py
+├── isolate_caller.py
 ├── speaker_verification.py
 └── vad_test.py
 ```
@@ -203,3 +206,81 @@ The `0.75` threshold is an initial POC default, not a production value. It shoul
 - Short clips, overlapping speakers, background noise, codecs, and emotional speech can affect embedding quality.
 - This verifies similarity to a reference speaker; it does not perform full diarization by itself.
 - The model may download runtime files into `outputs/` the first time it loads.
+
+## Phase 4: Caller-Only Isolation
+
+Phase 4 combines the Phase 2 Silero VAD speech detector with the Phase 3 SpeechBrain ECAPA-TDNN speaker verifier. It takes a full mixed conversation file and a caller reference file, detects all speech regions, compares each region to the caller voiceprint, then exports caller-matching speech separately from rejected speech.
+
+### How The Pipeline Works
+
+1. Load the mixed call audio.
+2. Convert audio to mono 16 kHz.
+3. Run Silero VAD to find speech segments.
+4. Generate a caller embedding from `caller_reference.wav`.
+5. Generate an embedding for each detected speech segment.
+6. Compute cosine similarity against the caller embedding.
+7. Keep segments where similarity is greater than or equal to the threshold.
+8. Reject segments below the threshold.
+9. Write caller-only audio, rejected audio, and a JSON report.
+
+### Why Phase 2 And Phase 3 Are Combined
+
+VAD finds where speech exists, but it does not know who is speaking. Speaker verification compares detected speech to a known caller reference. Together, they provide a caller-focused isolation pass: VAD narrows the work to speech regions, and speaker verification decides whether each region sounds like the caller.
+
+### Prepare Sample Audio
+
+Place these WAV files in `sample_audio/`:
+
+```text
+sample_audio/mixed_call.wav
+sample_audio/caller_reference.wav
+```
+
+The mixed call should contain the full conversation. The caller reference should be a clean clip of the main caller only, ideally without overlap, loud background noise, or long silence.
+
+### Run Phase 4
+
+From this folder:
+
+```bash
+python -m compileall .
+python -m unittest discover -s tests
+python run_phase4_check.py
+```
+
+If the sample files are missing, the check exits cleanly and prints:
+
+```text
+Add mixed_call.wav and caller_reference.wav into sample_audio/
+```
+
+To run directly:
+
+```bash
+python isolate_caller.py \
+  --input sample_audio/mixed_call.wav \
+  --reference sample_audio/caller_reference.wav \
+  --threshold 0.75
+```
+
+### Expected Outputs
+
+```text
+outputs/caller_only.wav
+outputs/rejected_segments.wav
+reports/isolation_report.json
+```
+
+The isolation report includes total duration, total detected speech duration, kept and rejected durations, segment counts, and per-segment similarity decisions.
+
+### Threshold Tuning
+
+The default threshold is `0.75`. Raise it to be stricter about caller matches, which may reject more true caller speech. Lower it to keep more speech, which may include more background speakers. Tune the threshold with representative call recordings before using the result for integration decisions.
+
+### Limitations
+
+- This is segment-level caller filtering, not full source separation.
+- Overlapping caller and background speech may still be kept if the caller embedding dominates.
+- Very short segments can produce unstable speaker embeddings.
+- A poor caller reference can cause both false rejects and false accepts.
+- Output audio concatenates kept or rejected segments, so original timing gaps are removed.

@@ -39,12 +39,29 @@ class RealtimeConversationMetadata(BaseModel):
     caller_only_audio_seconds: float = 0.0
     caller_only_audio_ulaw_path: str | None = None
     caller_only_audio_wav_path: str | None = None
+    caller_full_audio_seconds: float = 0.0
+    caller_full_audio_ulaw_path: str | None = None
+    caller_full_audio_wav_path: str | None = None
+    caller_prediction_clip_seconds: float = 0.0
+    caller_prediction_clip_ulaw_path: str | None = None
+    caller_prediction_clip_wav_path: str | None = None
+    caller_reference_audio_seconds: float = 0.0
+    caller_reference_audio_ulaw_path: str | None = None
+    caller_reference_audio_wav_path: str | None = None
     caller_audio_ready_for_voiceage: bool = False
     voiceage_minimum_ready_seconds: float = 5.0
     voiceage_capture_limit_seconds: float = 10.0
     assistant_audio_excluded_from_voiceage: bool = True
     assistant_audio_ulaw_path: str | None = None
     assistant_audio_seconds: float = 0.0
+    twilio_media_events: int = 0
+    twilio_audio_chunks_received: int = 0
+    twilio_audio_bytes_received: int = 0
+    twilio_invalid_audio_chunks: int = 0
+    estimated_twilio_audio_duration_seconds: float = 0.0
+    stream_start_timestamp: str | None = None
+    stream_stop_timestamp: str | None = None
+    stream_close_reason: str | None = None
 
 
 class ConversationLogEvent(BaseModel):

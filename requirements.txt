@@ -11,11 +11,15 @@ pydantic==2.10.4
 librosa==0.10.2
 soundfile==0.12.1
 numpy==1.26.4
+scikit-learn==1.5.0
 
 # Wav2Vec2 model inference
 torch==2.3.1
+torchaudio==2.3.1
 transformers==4.41.2
 safetensors==0.4.3
+silero-vad==5.1.2
+speechbrain==1.0.0
 
 # Twilio routes and callbacks
 requests==2.32.3

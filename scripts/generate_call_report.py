@@ -58,14 +58,16 @@ def main() -> int:
         return 1
 
     reports_dir = generate_reports_for_call(call_dir)
-    caller_audio_path = call_dir / "caller_only_audio.wav"
+    caller_audio_path = call_dir / "caller_full_audio.wav"
+    if not caller_audio_path.exists():
+        caller_audio_path = call_dir / "caller_only_audio.wav"
     duration = wav_duration_seconds(caller_audio_path)
 
     print(f"call_dir: {call_dir}")
-    print(f"caller_only_audio: {caller_audio_path}")
+    print(f"caller_full_audio: {caller_audio_path}")
     print(
-        "caller_only_audio_duration_seconds: "
-        f"{duration:.3f}" if duration is not None else "caller_only_audio_duration_seconds: unavailable"
+        "caller_full_audio_duration_seconds: "
+        f"{duration:.3f}" if duration is not None else "caller_full_audio_duration_seconds: unavailable"
     )
     print(f"voiceage_prediction_status: {load_voiceage_status(reports_dir)}")
     print(f"reports_path: {reports_dir}")

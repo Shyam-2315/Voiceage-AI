@@ -73,16 +73,43 @@ def assistant_instructions(conversation_style: ConversationStyle | None = None) 
     return f"{ASSISTANT_INSTRUCTIONS}\n\n{build_conversation_style_instructions(conversation_style)}"
 
 
+def realtime_turn_detection_timing(conversation_style: ConversationStyle | None = None) -> dict[str, int | None | bool]:
+    legacy_silence_ms = int(getattr(settings, "realtime_vad_silence_ms", 3000))
+    configured_silence_ms = int(getattr(settings, "realtime_silence_duration_ms", legacy_silence_ms))
+    adaptive_interruption_delay_ms = (
+        conversation_style.interruption_delay_ms if conversation_style is not None else None
+    )
+    allow_adaptive_extension = bool(getattr(settings, "realtime_allow_adaptive_silence_extension", False))
+    max_adaptive_silence_ms = int(getattr(settings, "realtime_max_adaptive_silence_ms", 3500))
+
+    final_silence_ms = configured_silence_ms
+    if allow_adaptive_extension and adaptive_interruption_delay_ms is not None:
+        final_silence_ms = max(configured_silence_ms, adaptive_interruption_delay_ms)
+        if max_adaptive_silence_ms > 0:
+            final_silence_ms = min(final_silence_ms, max(configured_silence_ms, max_adaptive_silence_ms))
+
+    return {
+        "realtime_silence_duration_ms": configured_silence_ms,
+        "adaptive_interruption_delay_ms": adaptive_interruption_delay_ms,
+        "adaptive_silence_extension_allowed": allow_adaptive_extension,
+        "final_turn_detection_silence_ms": final_silence_ms,
+    }
+
+
 def realtime_turn_detection(conversation_style: ConversationStyle | None = None) -> dict[str, Any]:
-    silence_duration_ms = settings.realtime_vad_silence_ms
-    if conversation_style is not None:
-        silence_duration_ms = max(silence_duration_ms, conversation_style.interruption_delay_ms)
+    timing = realtime_turn_detection_timing(conversation_style)
+    logger.info(
+        "Realtime turn detection selected: realtime_silence_duration_ms=%s adaptive_interruption_delay_ms=%s final_turn_detection_silence_ms=%s",
+        timing["realtime_silence_duration_ms"],
+        timing["adaptive_interruption_delay_ms"],
+        timing["final_turn_detection_silence_ms"],
+    )
 
     return {
         "type": "server_vad",
         "threshold": settings.realtime_vad_threshold,
         "prefix_padding_ms": settings.realtime_vad_prefix_ms,
-        "silence_duration_ms": silence_duration_ms,
+        "silence_duration_ms": timing["final_turn_detection_silence_ms"],
     }
 
 
@@ -246,13 +273,15 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
 
     try:
         openai_ws = await connect_openai_realtime()
+        initial_turn_timing = realtime_turn_detection_timing()
         logger.info(
-            "Azure/OpenAI Realtime WebSocket connected: provider=%s model=%s vad_threshold=%s vad_prefix_ms=%s vad_silence_ms=%s",
+            "Azure/OpenAI Realtime WebSocket connected: provider=%s model=%s vad_threshold=%s vad_prefix_ms=%s realtime_silence_duration_ms=%s final_turn_detection_silence_ms=%s",
             "azure" if settings.use_azure_openai_realtime else "openai",
             settings.realtime_model_name,
             settings.realtime_vad_threshold,
             settings.realtime_vad_prefix_ms,
-            settings.realtime_vad_silence_ms,
+            initial_turn_timing["realtime_silence_duration_ms"],
+            initial_turn_timing["final_turn_detection_silence_ms"],
         )
         await send_openai_event(openai_ws, openai_session_update_event())
         await conversation_logger.log_event(
@@ -261,6 +290,14 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
             {
                 "provider": "azure" if settings.use_azure_openai_realtime else "openai",
                 "model": settings.realtime_model_name,
+            },
+        )
+        await conversation_logger.log_event(
+            "openai",
+            "session.update.sent",
+            {
+                "reason": "initial",
+                **initial_turn_timing,
             },
         )
 
@@ -355,17 +392,24 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
 
             applied_adaptive_age_group = selection.selected_age_group
             style_payload = selection.log_payload()
+            adaptive_turn_timing = realtime_turn_detection_timing(selection.style)
             logger.info(
-                "Adaptive conversation selected: predicted_age_group=%s selected_age_group=%s used_fallback=%s conversation_style=%s",
+                "Adaptive conversation selected: predicted_age_group=%s selected_age_group=%s used_fallback=%s realtime_silence_duration_ms=%s adaptive_interruption_delay_ms=%s final_turn_detection_silence_ms=%s conversation_style=%s",
                 selection.requested_age_group,
                 selection.selected_age_group,
                 selection.used_fallback,
+                adaptive_turn_timing["realtime_silence_duration_ms"],
+                adaptive_turn_timing["adaptive_interruption_delay_ms"],
+                adaptive_turn_timing["final_turn_detection_silence_ms"],
                 json.dumps(style_payload["conversation_style"], default=str),
             )
             await conversation_logger.log_event(
                 "bridge",
                 "adaptive_conversation.style_selected",
-                style_payload,
+                {
+                    **style_payload,
+                    **adaptive_turn_timing,
+                },
             )
             await conversation_logger.log_event(
                 "openai",
@@ -373,6 +417,7 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                 {
                     "reason": "adaptive_conversation",
                     **style_payload,
+                    **adaptive_turn_timing,
                 },
             )
 
@@ -381,6 +426,29 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                 audio_path = await conversation_logger.write_caller_audio_snapshot()
                 if audio_path is None or conversation_logger.session_dir is None:
                     return
+                await conversation_logger.log_event(
+                    "bridge",
+                    "background_voice_isolation.config",
+                    {
+                        "enabled": settings.background_voice_isolation_enabled,
+                        "threshold": settings.background_voice_isolation_threshold,
+                        "reference_seconds": settings.background_voice_reference_seconds,
+                        "reference_from_vad": settings.background_voice_reference_from_vad,
+                        "reference_max_search_sec": settings.background_voice_reference_max_search_sec,
+                        "min_segment_sec": settings.background_voice_min_segment_sec,
+                        "debug_metrics": settings.background_voice_debug_metrics,
+                    },
+                )
+                logger.info(
+                    "Background voice isolation config: enabled=%s threshold=%s reference_seconds=%s reference_from_vad=%s reference_max_search_sec=%s min_segment_sec=%s debug_metrics=%s",
+                    settings.background_voice_isolation_enabled,
+                    settings.background_voice_isolation_threshold,
+                    settings.background_voice_reference_seconds,
+                    settings.background_voice_reference_from_vad,
+                    settings.background_voice_reference_max_search_sec,
+                    settings.background_voice_min_segment_sec,
+                    settings.background_voice_debug_metrics,
+                )
                 live_path = await asyncio.to_thread(
                     generate_live_voiceage_prediction,
                     conversation_logger.session_dir,
@@ -390,7 +458,7 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                 await conversation_logger.log_event(
                     "bridge",
                     "voiceage.live_prediction.completed",
-                    {"path": str(live_path), "audio_source": "caller_only"},
+                    {"path": str(live_path), "audio_source": "caller_prediction_clip"},
                 )
                 logger.info("VoiceAge live prediction generated: %s", live_path)
                 live_report = await asyncio.to_thread(load_json, live_path)
@@ -423,6 +491,7 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                         stream_sid = event.get("streamSid") or start.get("streamSid")
                         call_sid = start.get("callSid")
                         await conversation_logger.start(call_sid, stream_sid)
+                        await conversation_logger.mark_stream_started()
                         await conversation_logger.log_event(
                             "twilio",
                             "start",
@@ -436,6 +505,7 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                         continue
 
                     if event_type == "media":
+                        media_event_count = await conversation_logger.increment_twilio_media_event()
                         media = event.get("media") or {}
                         payload = media.get("payload")
                         if not payload:
@@ -447,11 +517,10 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                                 {"track": media.get("track")},
                             )
                             continue
-                        media_frame_count = await conversation_logger.increment_twilio_media_frame()
-                        if media_frame_count % 100 == 0:
+                        if media_event_count % 100 == 0:
                             logger.info(
                                 "Twilio media frame received: count=%s chunk=%s timestamp=%s",
-                                media_frame_count,
+                                media_event_count,
                                 media.get("chunk"),
                                 media.get("timestamp"),
                             )
@@ -461,7 +530,7 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                             await conversation_logger.log_event(
                                 "bridge",
                                 "voiceage.live_prediction.started",
-                                {"audio_source": "caller_only"},
+                                {"audio_source": "caller_prediction_clip"},
                             )
                         if assistant_speaking:
                             skipped_twilio_media_count += 1
@@ -493,16 +562,19 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                         continue
 
                     if event_type == "stop":
+                        await conversation_logger.mark_stream_closed("twilio_stop")
                         await conversation_logger.log_event("twilio", "stop", {})
                         stop_event.set()
                         break
 
                     await conversation_logger.log_event("twilio", str(event_type or "unknown"), {})
             except WebSocketDisconnect:
+                await conversation_logger.mark_stream_closed("twilio_websocket_disconnect")
                 await conversation_logger.log_event("twilio", "disconnect", {})
                 stop_event.set()
             except Exception as exc:
                 logger.exception("Twilio receive loop failed")
+                await conversation_logger.mark_stream_closed(f"twilio_receive_error:{exc.__class__.__name__}")
                 await conversation_logger.log_event("bridge", "twilio_receive.error", {"error": str(exc)})
                 stop_event.set()
 
@@ -737,10 +809,12 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
                             await send_twilio_audio_delta(delta)
                         continue
             except ConnectionClosed:
+                await conversation_logger.mark_stream_closed("openai_websocket_disconnect")
                 await conversation_logger.log_event("openai", "disconnect", {})
                 stop_event.set()
             except Exception as exc:
                 logger.exception("OpenAI receive loop failed")
+                await conversation_logger.mark_stream_closed(f"openai_receive_error:{exc.__class__.__name__}")
                 await conversation_logger.log_event("bridge", "openai_receive.error", {"error": str(exc)})
                 stop_event.set()
 
@@ -756,10 +830,12 @@ async def bridge_twilio_stream(twilio_ws: WebSocket) -> None:
 
     except Exception as exc:
         logger.exception("Realtime bridge failed")
+        await conversation_logger.mark_stream_closed(f"bridge_fatal_error:{exc.__class__.__name__}")
         await conversation_logger.log_event("bridge", "fatal.error", {"error": str(exc)})
         if twilio_ws.client_state.name == "CONNECTED":
             await twilio_ws.close(code=1011)
     finally:
+        await conversation_logger.mark_stream_closed("bridge_finalized")
         if openai_ws is not None:
             try:
                 await openai_ws.close()

@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import soundfile as sf
+
 from app.core.config import settings
 
 
@@ -98,6 +100,64 @@ def wav_duration_seconds(path: Path) -> float | None:
         return None
 
 
+def first_existing_path(*paths: Path | None) -> Path | None:
+    for path in paths:
+        if path is not None and path.exists():
+            return path
+    return None
+
+
+def metadata_path(metadata: dict[str, Any], key: str) -> Path | None:
+    value = metadata.get(key)
+    return Path(value) if value else None
+
+
+def report_audio_selection(
+    call_dir: Path,
+    metadata: dict[str, Any],
+    audio_path: Path | None = None,
+    audio_source: str | None = None,
+) -> dict[str, Any]:
+    caller_full_audio_path = first_existing_path(
+        metadata_path(metadata, "caller_full_audio_wav_path"),
+        call_dir / "caller_full_audio.wav",
+    )
+    legacy_caller_only_audio_path = first_existing_path(
+        metadata_path(metadata, "caller_only_audio_wav_path"),
+        call_dir / "caller_only_audio.wav",
+    )
+    prediction_clip_path = first_existing_path(
+        audio_path if audio_source == "caller_prediction_clip" else None,
+        metadata_path(metadata, "caller_prediction_clip_wav_path"),
+        call_dir / "caller_prediction_clip.wav",
+    )
+
+    if audio_source == "caller_prediction_clip":
+        selected_audio_path = first_existing_path(audio_path, prediction_clip_path)
+        selected_audio_source = "caller_prediction_clip"
+    elif caller_full_audio_path is not None:
+        selected_audio_path = caller_full_audio_path
+        selected_audio_source = "caller_full_audio"
+    else:
+        selected_audio_path = legacy_caller_only_audio_path
+        selected_audio_source = "caller_only_audio_legacy"
+
+    selected_duration = wav_duration_seconds(selected_audio_path) if selected_audio_path else None
+    return {
+        "selected_audio_path": selected_audio_path,
+        "selected_audio_source": selected_audio_source,
+        "selected_audio_duration_sec": selected_duration,
+        "caller_full_audio_path": caller_full_audio_path,
+        "caller_full_audio_exists": caller_full_audio_path is not None,
+        "caller_full_audio_duration_sec": wav_duration_seconds(caller_full_audio_path)
+        if caller_full_audio_path
+        else None,
+        "legacy_caller_only_audio_path": legacy_caller_only_audio_path,
+        "prediction_clip_path": prediction_clip_path,
+        "prediction_clip_exists": prediction_clip_path is not None,
+    }
+
+
 def redact_sensitive_text(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: redact_sensitive_text(item) for key, item in value.items()}
@@ -142,17 +202,49 @@ def read_events(events_path: Path) -> list[dict[str, Any]]:
     return events
 
 
-def generate_voiceage_report(call_dir: Path, call_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
-    audio_path = call_dir / "caller_only_audio.wav"
-    caller_audio_duration_seconds = wav_duration_seconds(audio_path)
-    caller_only_audio_available = audio_path.exists() and caller_audio_duration_seconds is not None
+def generate_voiceage_report(
+    call_dir: Path,
+    call_id: str,
+    metadata: dict[str, Any],
+    audio_path: Path | None = None,
+    audio_source: str | None = None,
+) -> dict[str, Any]:
+    audio_selection = report_audio_selection(call_dir, metadata, audio_path, audio_source)
+    prediction_audio_path = audio_selection["selected_audio_path"]
+    full_audio_path = audio_selection["caller_full_audio_path"]
+    selected_audio_duration_sec = audio_selection["selected_audio_duration_sec"]
+    full_call_audio_duration_sec = audio_selection["caller_full_audio_duration_sec"]
+    caller_audio_duration_seconds = selected_audio_duration_sec
+    caller_only_audio_available = (
+        prediction_audio_path is not None
+        and prediction_audio_path.exists()
+        and selected_audio_duration_sec is not None
+    )
+    logger.info(
+        "VoiceAge report audio selected: selected_audio_for_report=%s selected_audio_duration_sec=%s caller_full_audio_exists=%s prediction_clip_exists=%s",
+        str(prediction_audio_path) if prediction_audio_path else None,
+        selected_audio_duration_sec,
+        audio_selection["caller_full_audio_exists"],
+        audio_selection["prediction_clip_exists"],
+    )
     report: dict[str, Any] = {
         "call_id": call_id,
         "timestamp": utc_timestamp(),
-        "audio_file_used": str(audio_path) if audio_path.exists() else None,
-        "audio_source": VOICEAGE_AUDIO_SOURCE,
+        "audio_file_used": str(prediction_audio_path) if prediction_audio_path and prediction_audio_path.exists() else None,
+        "full_call_audio_file": str(full_audio_path) if full_audio_path and full_audio_path.exists() else None,
+        "prediction_audio_file": str(prediction_audio_path) if prediction_audio_path and prediction_audio_path.exists() else None,
+        "audio_source": audio_source or audio_selection["selected_audio_source"],
         "assistant_audio_excluded": True,
         "caller_audio_duration_seconds": caller_audio_duration_seconds,
+        "full_call_audio_duration_sec": full_call_audio_duration_sec,
+        "prediction_audio_duration_sec": selected_audio_duration_sec,
+        "selected_audio_for_report": str(prediction_audio_path)
+        if prediction_audio_path and prediction_audio_path.exists()
+        else None,
+        "selected_audio_duration_sec": selected_audio_duration_sec,
+        "twilio_media_chunks_received": metadata.get("twilio_audio_chunks_received")
+        or metadata.get("twilio_media_chunks_received")
+        or metadata.get("twilio_media_frames"),
         "minimum_required_seconds": VOICEAGE_MINIMUM_REPORT_SECONDS,
         "caller_only_audio_available": caller_only_audio_available,
         "prediction_success": False,
@@ -171,7 +263,9 @@ def generate_voiceage_report(call_dir: Path, call_id: str, metadata: dict[str, A
     if (
         not caller_only_audio_available
         or caller_audio_duration_seconds is None
-        or caller_audio_duration_seconds < VOICEAGE_MINIMUM_REPORT_SECONDS
+        or selected_audio_duration_sec is None
+        or selected_audio_duration_sec < VOICEAGE_MINIMUM_REPORT_SECONDS
+        or prediction_audio_path is None
     ):
         report["failure_reason"] = "caller_only_audio_missing_or_too_short"
         return report
@@ -179,7 +273,78 @@ def generate_voiceage_report(call_dir: Path, call_id: str, metadata: dict[str, A
     try:
         from app.services.model_service import model_service
 
-        prediction = model_service.predict_audio_file(audio_path)
+        if settings.background_voice_isolation_enabled:
+            try:
+                from app.services.audio_service import decode_audio_file_full_duration
+                from app.services.background_voice_isolation_service import BackgroundVoiceIsolationService
+
+                isolation_service = BackgroundVoiceIsolationService()
+                original_audio = decode_audio_file_full_duration(prediction_audio_path)
+                input_file_duration_sec = len(original_audio) / float(settings.target_sample_rate)
+                filtered_audio = isolation_service.filter_audio_for_prediction(
+                    original_audio,
+                    input_file_duration_sec=input_file_duration_sec,
+                )
+                isolation_summary = isolation_service.report_summary()
+                report["background_voice_isolation"] = isolation_summary
+                if filtered_audio is not original_audio:
+                    isolated_audio_path = call_dir / "caller_full_background_isolated.wav"
+                    sf.write(isolated_audio_path, filtered_audio, settings.target_sample_rate)
+                    prediction_audio_path = isolated_audio_path
+                    report["audio_file_used"] = str(isolated_audio_path)
+                    report["prediction_audio_file"] = str(isolated_audio_path)
+                    report["audio_source"] = "caller_only_background_isolated"
+                    report["prediction_audio_duration_sec"] = round(
+                        len(filtered_audio) / float(settings.target_sample_rate),
+                        3,
+                    )
+                metrics = isolation_summary.get("debug_metrics") or {}
+                logger.info(
+                    "Background voice isolation summary: enabled=%s reference_ready=%s kept_segments=%s rejected_segments=%s avg_similarity=%s threshold=%s fallback_used=%s fallback_reason=%s reference_source=%s reference_segment_count=%s reference_start_sec=%s reference_end_sec=%s reference_audio_duration_sec=%s input_file_duration_sec=%s full_audio_duration_before_reference_slice=%s vad_audio_duration_sec=%s total_audio_duration_sec=%s audio_rms=%s audio_peak=%s vad_segment_count=%s vad_speech_duration_sec=%s vad_speech_percentage=%s",
+                    isolation_summary.get("enabled"),
+                    isolation_summary.get("reference_ready"),
+                    isolation_summary.get("kept_segments"),
+                    isolation_summary.get("rejected_segments"),
+                    isolation_summary.get("avg_similarity"),
+                    isolation_summary.get("threshold"),
+                    isolation_summary.get("fallback_used"),
+                    isolation_summary.get("fallback_reason"),
+                    metrics.get("reference_source"),
+                    metrics.get("reference_segment_count"),
+                    metrics.get("reference_start_sec"),
+                    metrics.get("reference_end_sec"),
+                    metrics.get("reference_audio_duration_sec"),
+                    metrics.get("input_file_duration_sec"),
+                    metrics.get("full_audio_duration_before_reference_slice"),
+                    metrics.get("vad_audio_duration_sec"),
+                    metrics.get("total_audio_duration_sec"),
+                    metrics.get("audio_rms"),
+                    metrics.get("audio_peak"),
+                    metrics.get("vad_segment_count"),
+                    metrics.get("vad_speech_duration_sec"),
+                    metrics.get("vad_speech_percentage"),
+                )
+                prediction = model_service.predict(filtered_audio)
+            except Exception as isolation_exc:
+                logger.warning(
+                    "Background voice isolation preprocessing failed; falling back to original caller audio: %s",
+                    isolation_exc,
+                )
+                report["background_voice_isolation"] = {
+                    "enabled": True,
+                    "reference_ready": False,
+                    "debug_metrics_enabled": settings.background_voice_debug_metrics,
+                    "kept_segments": 0,
+                    "rejected_segments": 0,
+                    "avg_similarity": None,
+                    "threshold": settings.background_voice_isolation_threshold,
+                    "fallback_used": True,
+                    "failure_reason": isolation_exc.__class__.__name__,
+                    "fallback_reason": isolation_exc.__class__.__name__,
+                }
+                prediction = model_service.predict_audio_file(prediction_audio_path)
+        else:
+            prediction = model_service.predict_audio_file(prediction_audio_path)
     except Exception as exc:
         logger.exception("VoiceAge prediction failed while generating report for %s", call_dir)
         report["failure_reason"] = str(exc)
@@ -203,10 +368,16 @@ def generate_voiceage_report(call_dir: Path, call_id: str, metadata: dict[str, A
 
 def generate_live_voiceage_prediction(call_dir: Path, call_id: str, audio_path: Path) -> Path:
     metadata = {
-        "caller_only_audio_wav_path": str(audio_path),
-        "caller_only_audio_seconds": wav_duration_seconds(audio_path),
+        "caller_prediction_clip_wav_path": str(audio_path),
+        "caller_prediction_clip_seconds": wav_duration_seconds(audio_path),
     }
-    report = generate_voiceage_report(call_dir, call_id, metadata)
+    report = generate_voiceage_report(
+        call_dir,
+        call_id,
+        metadata,
+        audio_path=audio_path,
+        audio_source="caller_prediction_clip",
+    )
     live_path = call_dir / "voiceage_live_prediction.json"
     write_json(live_path, report)
     return live_path
@@ -506,9 +677,12 @@ def voiceage_markdown(report: dict[str, Any]) -> str:
 | Call ID | {report.get("call_id")} |
 | Generated | {report.get("timestamp")} |
 | Audio File Used | {report.get("audio_file_used") or "Unavailable"} |
+| Full Call Audio File | {report.get("full_call_audio_file") or "Unavailable"} |
 | Audio Source | {report.get("audio_source") or "Unavailable"} |
 | Assistant Audio Excluded | {bool_text(bool(report.get("assistant_audio_excluded")))} |
-| Caller Audio Duration | {format_value(report.get("caller_audio_duration_seconds"), " seconds")} |
+| Full Call Audio Duration | {format_value(report.get("full_call_audio_duration_sec"), " seconds")} |
+| Prediction Audio Duration | {format_value(report.get("prediction_audio_duration_sec"), " seconds")} |
+| Twilio Media Chunks Received | {format_value(report.get("twilio_media_chunks_received"))} |
 | Minimum Required Audio | {format_value(report.get("minimum_required_seconds"), " seconds")} |
 | Prediction Success | {bool_text(bool(report.get("prediction_success")))} |
 | Predicted Age Group | {report.get("predicted_age_group") or "Unavailable"} |
@@ -614,7 +788,9 @@ def combined_markdown(report: dict[str, Any]) -> str:
 | Confidence Level | {voiceage.get("confidence_level") or "Unavailable"} |
 | Audio Source | {voiceage.get("audio_source") or "Unavailable"} |
 | Caller Audio Available | {bool_text(bool(systems.get("caller_only_audio_available")))} |
-| Caller Audio Duration | {format_value(voiceage.get("caller_audio_duration_seconds"), " seconds")} |
+| Full Call Audio Duration | {format_value(voiceage.get("full_call_audio_duration_sec"), " seconds")} |
+| Prediction Audio Duration | {format_value(voiceage.get("prediction_audio_duration_sec"), " seconds")} |
+| Twilio Media Chunks Received | {format_value(voiceage.get("twilio_media_chunks_received"))} |
 | Assistant Audio Excluded | {bool_text(bool(systems.get("assistant_audio_excluded_from_voiceage")))} |
 
 ## Conversation Result
