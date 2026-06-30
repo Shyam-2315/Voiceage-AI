@@ -166,3 +166,19 @@ The realtime bridge logs this message when report generation finishes:
 ```text
 Post-call reports generated: <path>
 ```
+
+## Notebook Demo: Background Voice Isolation
+
+A standalone demo notebook is available at:
+
+```text
+notebooks/background_voice_isolation_demo.ipynb
+```
+
+Run it from the repository root:
+
+```bash
+jupyter notebook notebooks/background_voice_isolation_demo.ipynb
+```
+
+The notebook loads a saved `caller_full_audio.wav`, runs Silero VAD plus ECAPA-TDNN speaker verification to produce `caller_full_background_isolated.wav`, optionally runs the existing Wav2Vec2 age prediction flow on the isolated audio, and writes `background_voice_isolation_demo_report.json`.
